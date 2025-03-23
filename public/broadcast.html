@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Démarrer un live - Live Streaming Platform</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="header">
+        <h1>Démarrer un live</h1>
+        <nav>
+            <a href="/" class="btn btn-secondary">Retour à l'accueil</a>
+        </nav>
+    </header>
+
+    <main class="broadcast-container">
+        <div class="form-group">
+            <label for="stream-title">Titre du stream</label>
+            <input type="text" id="stream-title" placeholder="Mon super live stream">
+        </div>
+
+        <div class="video-container">
+            <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+
+        <div class="controls">
+            <button id="startButton" class="btn btn-primary">Démarrer le live</button>
+            <button id="stopButton" class="btn btn-secondary" disabled>Arrêter le live</button>
+        </div>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let localStream;
+        let peerConnections = {};
+
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        async function startStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+                
+                document.getElementById('localVideo').srcObject = localStream;
+                
+                const title = document.getElementById('stream-title').value || 'Live Stream';
+                socket.emit('start-stream', { title });
+                
+                document.getElementById('startButton').disabled = true;
+                document.getElementById('stopButton').disabled = false;
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+                alert('Erreur lors de l\'accès à la caméra ou au micro');
+            }
+        }
+
+        function stopStream() {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                document.getElementById('localVideo').srcObject = null;
+            }
+            
+            Object.values(peerConnections).forEach(pc => pc.close());
+            peerConnections = {};
+            
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+        }
+
+        socket.on('viewer-joined', async ({ viewerId }) => {
+            const peerConnection = new RTCPeerConnection(configuration);
+            peerConnections[viewerId] = peerConnection;
+
+            localStream.getTracks().forEach(track => {
+                peerConnection.addTrack(track, localStream);
+            });
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('signal', {
+                        to: viewerId,
+                        signal: {
+                            type: 'candidate',
+                            candidate: event.candidate
+                        }
+                    });
+                }
+            };
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            
+            socket.emit('signal', {
+                to: viewerId,
+                signal: {
+                    type: 'offer',
+                    sdp: peerConnection.localDescription
+                }
+            });
+        });
+
+        socket.on('signal', async ({ from, signal }) => {
+            if (signal.type === 'answer') {
+                const peerConnection = peerConnections[from];
+                if (peerConnection) {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+                }
+            }
+        });
+
+        document.getElementById('startButton').addEventListener('click', startStream);
+        document.getElementById('stopButton').addEventListener('click', stopStream);
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', stopStream);
+    </script>
+</body>
+</html> 

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Regarder le live - Live Streaming Platform</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <header class="header">
+        <h1>Live Stream</h1>
+        <nav>
+            <a href="/" class="btn btn-secondary">Retour à l'accueil</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <div class="video-container">
+            <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+
+        <div class="stream-info">
+            <h2 id="streamTitle">Chargement...</h2>
+            <p id="streamerName">Chargement...</p>
+        </div>
+
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+                <!-- Les messages seront injectés ici -->
+            </div>
+            <div class="chat-input">
+                <input type="text" id="chatInput" placeholder="Envoyer un message...">
+                <button class="btn btn-primary" id="sendMessage">Envoyer</button>
+            </div>
+        </div>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let peerConnection;
+        const streamId = window.location.pathname.split('/').pop();
+
+        const configuration = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+
+        async function initializeConnection() {
+            peerConnection = new RTCPeerConnection(configuration);
+            
+            peerConnection.ontrack = event => {
+                const remoteVideo = document.getElementById('remoteVideo');
+                if (remoteVideo.srcObject !== event.streams[0]) {
+                    remoteVideo.srcObject = event.streams[0];
+                }
+            };
+
+            peerConnection.onicecandidate = event => {
+                if (event.candidate) {
+                    socket.emit('signal', {
+                        to: streamId,
+                        signal: {
+                            type: 'candidate',
+                            candidate: event.candidate
+                        }
+                    });
+                }
+            };
+
+            socket.emit('join-stream', streamId);
+        }
+
+        socket.on('signal', async ({ from, signal }) => {
+            try {
+                if (signal.type === 'offer') {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    
+                    socket.emit('signal', {
+                        to: from,
+                        signal: {
+                            type: 'answer',
+                            sdp: peerConnection.localDescription
+                        }
+                    });
+                } else if (signal.type === 'candidate') {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                }
+            } catch (error) {
+                console.error('Error handling signal:', error);
+            }
+        });
+
+        // Chat functionality
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const sendButton = document.getElementById('sendMessage');
+
+        function addChatMessage(message) {
+            const messageElement = document.createElement('div');
+            messageElement.textContent = message;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        sendButton.addEventListener('click', () => {
+            const message = chatInput.value.trim();
+            if (message) {
+                socket.emit('chat-message', { streamId, message });
+                chatInput.value = '';
+            }
+        });
+
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendButton.click();
+            }
+        });
+
+        socket.on('chat-message', ({ username, message }) => {
+            addChatMessage(`${username}: ${message}`);
+        });
+
+        // Initialize connection when page loads
+        initializeConnection();
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (peerConnection) {
+                peerConnection.close();
+            }
+        });
+    </script>
+</body>
+</html> 
